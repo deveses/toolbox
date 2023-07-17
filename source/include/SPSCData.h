@@ -1,3 +1,4 @@
+#include <atomic>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -36,6 +37,41 @@ public:
         sharedData = &storage[2];
     }
 
+protected:
+    SPSCData<T>* acquireWrite()
+    {
+        bool expected = false;
+        if (writing.compare_exchange_weak(expected, true))
+        {
+            return this;
+        }
+
+        return nullptr;
+    }
+
+    void releaseWrite()
+    {
+        bool expected = true;
+        writing.compare_exchange_weak(expected, false);
+    }
+
+        SPSCData<T>* acquireRead()
+    {
+        bool expected = false;
+        if (reading.compare_exchange_weak(expected, true))
+        {
+            return this;
+        }
+
+        return nullptr;
+    }
+
+    void releaseRead()
+    {
+        bool expected = true;
+        reading.compare_exchange_weak(expected, false);
+    }
+
     // used by producer to push changes to consumer
     void commit()
     {
@@ -61,22 +97,37 @@ private:
     DataStore* producerData = nullptr;
     DataStore* consumerData = nullptr;
     std::atomic<DataStore*> sharedData;
+    std::atomic_bool writing = false;
+    std::atomic_bool reading = false;
+
 };
 
 template<class T>
 class WriteScope
 {
 public:
-    WriteScope(SPSCData<T>* data)
+    WriteScope(SPSCData<T>& data)
     {
-        store = data;
+        store = data.acquireWrite();
     }
     ~WriteScope()
     {
-        store->commit();
+        if (store)
+        {
+            store->commit();
+            store->releaseWrite();
+        }
     }
 
-    T* get() { return &store->producerData->data; }
+    bool isValid()
+    {
+        return store != nullptr;
+    }
+
+    T* get() 
+    { 
+        return &store->producerData->data; 
+    }
 
     T* operator ->()
     {
@@ -91,12 +142,23 @@ template<class T>
 class ReadScope
 {
 public:
-    ReadScope(SPSCData<T>* data) 
+    ReadScope(SPSCData<T>& data) 
     { 
-        if (data->fetch())
-            ptr = &data->consumerData->data;
+        store = data.acquireRead();
+
+        if (store && store->fetch())
+            ptr = &store->consumerData->data;
     }
-    ~ReadScope() { }
+    ~ReadScope() 
+    { 
+        if (store)
+            store->releaseRead();
+    }
+
+    bool isValid() const
+    {
+        return ptr != nullptr;
+    }
 
     const T* get() const { return ptr; }
 
@@ -106,6 +168,7 @@ public:
     }
 
 private:
+    SPSCData<T>* store = nullptr;
     const T* ptr = nullptr;
 
 };

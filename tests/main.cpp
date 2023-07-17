@@ -1,5 +1,12 @@
 #include "SPSCData.h"
 
+static void check_failed(const char* condition, const char* file, int line) {
+  std::cout << "Condition \"" << condition << "\" at " << file << ":" << line << " failed!" << std::endl;
+  std::terminate();
+}
+
+#define TEST_CHECK(condition) for(bool c = (condition);!c;) check_failed(#condition, __FILE__, __LINE__);
+
 struct TestParams {
   float fvalue = 0.0f;
   int64_t timestamp = 0;
@@ -25,7 +32,18 @@ public:
     std::this_thread::sleep_for(std::chrono::milliseconds((long)(wait)));
   }
 
-  void test_single_thread() {}
+  void test_single_thread() 
+  {
+    SPSCData<TestParams> data;
+
+    {
+      WriteScope writer1(data);
+      TEST_CHECK(writer1.isValid());
+
+      WriteScope writer2(data);
+      TEST_CHECK(!writer2.isValid());
+    }
+  }
 
   void test_multi_thread() {
     using namespace std::chrono;
@@ -51,7 +69,7 @@ public:
       int64_t counter = 0;
       auto startTime = steady_clock::now();
       for (size_t i = 0; i < iterations; i++) {
-        WriteScope writeScope(&data);
+        WriteScope writeScope(data);
         writeScope->update(++counter);
         std::this_thread::sleep_for(1us);
       }
@@ -76,9 +94,11 @@ public:
       TestParams prevParams;
       int numReads = 0;
       for (size_t i = 0; i < iterations; i++) {
-        ReadScope readScope(&data);
+        ReadScope readScope(data);
 
         if (readScope.get()) {
+          TEST_CHECK(!readScope->equals(prevParams) || prevParams.counter < readScope->counter);
+
           if (readScope->equals(prevParams)) {
             std::cout << "ERROR: new data equals the old one!" << std::endl;
           } else if (prevParams.counter >= readScope->counter) {
@@ -117,15 +137,19 @@ public:
 int main() {
   auto start = std::chrono::steady_clock::now();
 
+  std::cout << ">> test started" << std::endl;
+
   Test t;
+  std::cout << ">> testing single thread" << std::endl;
   t.test_single_thread();
+  std::cout << ">> testing mulitple threads" << std::endl;
   t.test_multi_thread();
 
   auto end = std::chrono::steady_clock::now();
   auto diff =
       std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-  std::cout << "test" << std::endl;
-  std::cout << "took " << diff.count() << " us" << std::endl;
+
+  std::cout << "test took " << diff.count() << " us" << std::endl;
 
   return 0;
 }
